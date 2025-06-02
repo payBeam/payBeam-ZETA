@@ -1,56 +1,41 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.26;
 
-import {RevertContext} from "@zetachain/protocol-contracts/contracts/Revert.sol";
+import {RevertContext, RevertOptions} from "@zetachain/protocol-contracts/contracts/Revert.sol";
 import "@zetachain/protocol-contracts/contracts/evm/GatewayEVM.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+// import "./Paybeam.sol";
 
-contract Connected {
+contract PayBeamConnected {
     using SafeERC20 for IERC20;
 
     GatewayEVM public immutable gateway;
-
-    event RevertEvent(string, RevertContext);
-    event HelloEvent(string, string);
+    // PayBeamUniversal public immutable payBeam;
 
     error Unauthorized();
+
+    event PingEvent(string indexed greeting, string message);
+    event RevertEvent(string indexed message, RevertContext revertContext);
 
     modifier onlyGateway() {
         if (msg.sender != address(gateway)) revert Unauthorized();
         _;
     }
 
-    constructor(address payable gatewayAddress) {
+    constructor(address gatewayAddress) {
         gateway = GatewayEVM(gatewayAddress);
-    }
-
-    function call(
-        address receiver,
-        bytes calldata message,
-        RevertOptions memory revertOptions
-    ) external {
-        gateway.call(receiver, message, revertOptions);
+        // payBeam = PayBeamUniversal(payBeamAddress);
     }
 
     function deposit(
         address receiver,
         RevertOptions memory revertOptions
     ) external payable {
-        gateway.deposit{value: msg.value}(receiver, revertOptions);
-    }
-
-    function deposit(
-        address receiver,
-        uint256 amount,
-        address asset,
-        RevertOptions memory revertOptions
-    ) external {
-        IERC20(asset).safeTransferFrom(msg.sender, address(this), amount);
-        IERC20(asset).approve(address(gateway), amount);
-        gateway.deposit(receiver, amount, asset, revertOptions);
+        gateway.deposit{ value: msg.value }(receiver, revertOptions);
     }
 
     function depositAndCall(
+        bytes32 invoiceId,
         address receiver,
         uint256 amount,
         address asset,
@@ -59,30 +44,32 @@ contract Connected {
     ) external {
         IERC20(asset).safeTransferFrom(msg.sender, address(this), amount);
         IERC20(asset).approve(address(gateway), amount);
-        gateway.depositAndCall(receiver, amount, asset, message, revertOptions);
+        gateway.depositAndCall(receiver, amount,  asset, message, revertOptions);
     }
 
-    function depositAndCall(
-        address receiver,
-        bytes calldata message,
+    function payNativeCrossChain(
+        bytes32 invoiceId,
+        address payerAddressOnZEVM,
         RevertOptions memory revertOptions
     ) external payable {
-        gateway.depositAndCall{value: msg.value}(
-            receiver,
+        bytes memory message = abi.encode(invoiceId, payerAddressOnZEVM);
+        
+        gateway.depositAndCall{ value: msg.value }(
+            payerAddressOnZEVM,
             message,
             revertOptions
         );
     }
 
-    function hello(string memory message) external payable {
-        emit HelloEvent("Hello on EVM", message);
+     function ping(string memory message) external payable {
+        emit PingEvent("Hello on EVM", message);
     }
 
     function onCall(
         MessageContext calldata context,
         bytes calldata message
     ) external payable onlyGateway returns (bytes4) {
-        emit HelloEvent("Hello on EVM from onCall()", "hey");
+        emit PingEvent("Hello on EVM from onCall()", "hello there");
         return "";
     }
 
@@ -92,7 +79,9 @@ contract Connected {
         emit RevertEvent("Revert on EVM", revertContext);
     }
 
-    receive() external payable {}
 
+    // --- Fallback functions ---
+    receive() external payable {}
     fallback() external payable {}
 }
+
