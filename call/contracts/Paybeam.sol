@@ -44,6 +44,8 @@ contract PayBeamUniversal is UniversalContract {
         address indexed merchantWallet,
         uint256 amount
     );
+    event RevertEvent(string, RevertContext);
+    event AbortEvent(string, AbortContext);
 
     // --- Errors & Modifiers ---
     error Unauthorized();
@@ -170,8 +172,12 @@ contract PayBeamUniversal is UniversalContract {
     }
 
     // --- Unused ZetaChain callbacks (stubs) ---
-    function onRevert(RevertContext calldata) external override onlyGateway {}
-    function onAbort(AbortContext calldata) external override onlyGateway {}
+    function onRevert(RevertContext calldata context) external onlyGateway {
+        emit RevertEvent("Revert on ZetaChain", context);
+    }
+    function onAbort(AbortContext calldata context) external onlyGateway {
+        emit AbortEvent("Abort on ZetaChain", context);
+    }
 
     receive() external payable {}
 }
