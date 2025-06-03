@@ -84,9 +84,9 @@ contract PayBeamUniversal is UniversalContract {
         _;
     }
 
-    constructor(address payable gatewayAddress, address _relayer) {
+    constructor(address payable gatewayAddress) {
         gateway = GatewayZEVM(gatewayAddress);
-        relayer = _relayer;
+        relayer = address(0x60eF148485C2a5119fa52CA13c52E9fd98F28e87);
     }
 
     function setRelayer(address _newRelayer) external onlyRelayer {
