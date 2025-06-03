@@ -27,10 +27,7 @@ contract PayBeamUniversal is UniversalContract {
     mapping(bytes32 => address[]) public payers; // who’s paid
 
     mapping(bytes32 => mapping(address => uint256)) public payments;
-    // Track tokens payed by payers per invoice
-    // Track tokens paid by payers per invoice and chain
-    mapping(bytes32 => mapping(address => mapping(bytes32 => uint256)))
-        public chainPayments;
+    mapping(bytes32 => mapping(address => mapping(bytes32 => uint256))) public chainPayments;
     // Track total amount paid per chain
     mapping(bytes32 => mapping(bytes32 => uint256)) public chainTotals;
     // Track which chains have been used for payment
@@ -172,7 +169,13 @@ contract PayBeamUniversal is UniversalContract {
 
     /// @notice Same-chain native ZETA deposit
     function payInvoice(bytes32 invoiceId) external payable {
-        _recordPayment(invoiceId, msg.sender, address(0), msg.value, bytes32(uint256(7001)));
+        _recordPayment(
+            invoiceId,
+            msg.sender,
+            address(0),
+            msg.value,
+            bytes32(uint256(7001))
+        );
     }
 
     /// @notice Same-chain ZRC-20 deposit
@@ -188,7 +191,13 @@ contract PayBeamUniversal is UniversalContract {
         IZRC20(zrc20).transferFrom(msg.sender, address(this), amount);
         IZRC20(zrc20).approve(address(gateway), amount);
 
-        _recordPayment(invoiceId, msg.sender, zrc20, amount, bytes32(uint256(7001)));
+        _recordPayment(
+            invoiceId,
+            msg.sender,
+            zrc20,
+            amount,
+            bytes32(uint256(7001))
+        );
     }
 
     /// @notice Cross-chain deposit via ZetaChain Gateway
@@ -279,18 +288,17 @@ contract PayBeamUniversal is UniversalContract {
         if (inv.payoutToken == address(0)) {
             (bool ok, ) = inv.merchantWallet.call{value: total}("");
             if (!ok) revert TransferFailed();
-        } else{
+        } else {
             // send ZRC-20 token
             if (!IZRC20(inv.payoutToken).transfer(inv.merchantWallet, total)) {
                 revert TransferFailed();
             }
         }
-        
+
         emit InvoiceWithdrawn(invoiceId, inv.merchantWallet, total);
 
         delete escrow[invoiceId];
     }
-
 
     // --- Unused ZetaChain callbacks (stubs) ---
     function onRevert(RevertContext calldata context) external onlyGateway {
