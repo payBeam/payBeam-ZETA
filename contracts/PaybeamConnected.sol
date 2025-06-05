@@ -4,13 +4,15 @@ pragma solidity 0.8.26;
 import {RevertContext, RevertOptions} from "@zetachain/protocol-contracts/contracts/Revert.sol";
 import "@zetachain/protocol-contracts/contracts/evm/GatewayEVM.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import "@openzeppelin/contracts/access/Ownable.sol";
 // import "./Paybeam.sol";
 
-contract PayBeamConnected {
+contract PaybeamConnected is Ownable {
     using SafeERC20 for IERC20;
 
     GatewayEVM public immutable gateway;
     // PayBeamUniversal public immutable payBeam;
+    address public counterParty;
 
     error Unauthorized();
 
@@ -22,9 +24,13 @@ contract PayBeamConnected {
         _;
     }
 
-    constructor(address gatewayAddress) {
+    constructor(address gatewayAddress, address initialOwner) Ownable(initialOwner) {
         gateway = GatewayEVM(gatewayAddress);
         // payBeam = PayBeamUniversal(payBeamAddress);
+    }
+
+    function setCounterParty(address _counterParty) external onlyOwner {
+        counterParty = _counterParty;
     }
 
     function deposit(

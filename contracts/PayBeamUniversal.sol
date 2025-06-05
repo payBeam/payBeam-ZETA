@@ -8,6 +8,7 @@ import "@zetachain/protocol-contracts/contracts/zevm/GatewayZEVM.sol";
 contract PayBeamUniversal is UniversalContract {
     GatewayZEVM public immutable gateway; // ZetaChain Gateway contract
     address public relayer; // Backend relayer address
+    uint256 public gasLimit = 100000; 
 
     struct Invoice {
         address payoutToken; // ZRC-20 or address(0) for native ZETA
@@ -25,6 +26,8 @@ contract PayBeamUniversal is UniversalContract {
     mapping(bytes32 => Invoice) public invoices;
     mapping(bytes32 => uint256) public escrow; // total held
     mapping(bytes32 => address[]) public payers; // who’s paid
+
+    mapping(address => uint256) public merchantBalance;
 
     mapping(bytes32 => mapping(address => uint256)) public payments;
     mapping(bytes32 => mapping(address => mapping(bytes32 => uint256))) public chainPayments;
@@ -63,6 +66,11 @@ contract PayBeamUniversal is UniversalContract {
     );
     event RevertEvent(string, RevertContext);
     event AbortEvent(string, AbortContext);
+    event PingEvent(string indexed greeting, string message);
+    event MerchantWalletUpdated(
+        bytes32 indexed invoiceId,
+        address newMerchantWallet
+    );
 
     // --- Errors & Modifiers ---
     error Unauthorized();
@@ -71,6 +79,7 @@ contract PayBeamUniversal is UniversalContract {
     error AlreadyWithdrawn();
     error TransferFailed();
     error NotFullyPaid();
+
 
     modifier onlyRelayer() {
         if (msg.sender != relayer) revert Unauthorized();
@@ -123,6 +132,62 @@ contract PayBeamUniversal is UniversalContract {
             merchantWallet
         );
     }
+
+    function setMerchantWallet(
+        bytes32 invoiceId,
+        address newMerchantWallet
+    ) external onlyRelayer {
+        Invoice storage invoice = invoices[invoiceId];
+        require(invoice.amount != 0, "Invoice not found");
+        require(newMerchantWallet != address(0), "Zero merchant wallet");
+
+        invoice.merchantWallet = newMerchantWallet;
+        emit MerchantWalletUpdated(invoiceId, newMerchantWallet);
+    }
+
+    function WithdrawCrossChain(
+        bytes32 invoiceId,
+        address payoutToken,
+        uint256 amount,
+        bytes memory receiver,
+        // CallOptions memory callOptions,
+        RevertOptions memory revertOptions
+    ) external onlyGateway {
+        (address gasZRC20, uint256 gasFee) = IZRC20(payoutToken)
+            .withdrawGasFeeWithGasLimit(
+                gasLimit 
+            );
+        if (
+            !IZRC20(payoutToken).transferFrom(msg.sender, address(this), gasFee)
+        ) revert TransferFailed();
+        IZRC20(payoutToken).approve(address(gateway), gasFee);
+        bytes memory message = abi.encode(
+            invoiceId,
+            payoutToken,
+            amount,
+            receiver
+        );
+
+        CallOptions memory callOptions = CallOptions(gasLimit, false);
+
+        RevertOptions memory revertOptions = RevertOptions(
+            address(this),
+            true,
+            address(0),
+            message,
+            gasLimit
+        );
+
+        gateway.call(
+            receiver,
+            payoutToken,
+            message,
+            callOptions,
+            revertOptions
+        );
+    }
+    
+    
 
     function callCreateInvoice(
         bytes32 invoiceId,
