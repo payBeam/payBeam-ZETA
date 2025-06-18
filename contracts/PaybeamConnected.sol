@@ -7,6 +7,7 @@ import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 // import "./Paybeam.sol";
 
+// To be deployed to base_sepolia
 contract PaybeamConnected is Ownable {
     using SafeERC20 for IERC20;
 
@@ -24,7 +25,7 @@ contract PaybeamConnected is Ownable {
         _;
     }
 
-    constructor(address gatewayAddress, address initialOwner) Ownable(initialOwner) {
+    constructor(address gatewayAddress) Ownable(msg.sender) {
         gateway = GatewayEVM(gatewayAddress);
         // payBeam = PayBeamUniversal(payBeamAddress);
     }

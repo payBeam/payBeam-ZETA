@@ -5,6 +5,7 @@ import {RevertContext, RevertOptions} from "@zetachain/protocol-contracts/contra
 import "@zetachain/protocol-contracts/contracts/zevm/interfaces/UniversalContract.sol";
 import "@zetachain/protocol-contracts/contracts/zevm/GatewayZEVM.sol";
 
+// To be deployed to Zeta Athens
 contract PayBeamUniversal is UniversalContract {
     GatewayZEVM public immutable gateway; // ZetaChain Gateway contract
     address public relayer; // Backend relayer address
@@ -92,7 +93,7 @@ contract PayBeamUniversal is UniversalContract {
 
     constructor(address payable gatewayAddress) {
         gateway = GatewayZEVM(gatewayAddress);
-        relayer = address(0x60eF148485C2a5119fa52CA13c52E9fd98F28e87);
+        relayer = address(0xC282Cb7cE6c175582B84BF94C61258Bb5cDCA88e);
     }
 
     function setRelayer(address _newRelayer) external onlyRelayer {
