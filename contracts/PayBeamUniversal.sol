@@ -15,20 +15,25 @@ contract PayBeamUniversal is UniversalContract {
         address payoutToken; // ZRC-20 or address(0) for native ZETA
         uint256 amount; // total due
         address merchantWallet; // where funds go on withdraw
-        address merchantId; // off-chain merchant reference
+        string merchantId; // off-chain merchant reference
         bool paid; // reached threshold?
         bool withdrawn; // funds sent out?
-        uint256 totalReceived; // total amount received across all chains
         uint256 requiredAmount; // amount required to complete payment
         uint256 timestamp; // when invoice was created
         string description; // optional invoice description
+        // Removed totalReceived; now tracked per token
     }
 
     mapping(bytes32 => Invoice) public invoices;
+    // New: Track total received per invoice per token
+    mapping(bytes32 => mapping(address => uint256)) public invoiceReceivedPerToken;
     mapping(bytes32 => uint256) public escrow; // total held
     mapping(bytes32 => address[]) public payers; // who’s paid
 
-    mapping(address => uint256) public merchantBalance;
+    mapping(string => uint256) public merchantBalance;
+    
+    // Track overpayments per payer
+    mapping(bytes32 => mapping(address => uint256)) public overpayments;
 
     mapping(bytes32 => mapping(address => uint256)) public payments;
     mapping(bytes32 => mapping(address => mapping(bytes32 => uint256))) public chainPayments;
@@ -40,14 +45,14 @@ contract PayBeamUniversal is UniversalContract {
     // --- Events ---
     event InvoiceCreated(
         bytes32 indexed invoiceId,
-        address indexed merchantId,
+        string indexed merchantId,
         address payoutToken,
         uint256 amount,
         address merchantWallet
     );
     event InvoiceCallCreated(
         bytes32 indexed invoiceId,
-        address indexed merchantId,
+        string indexed merchantId,
         address payoutToken,
         uint256 amount,
         address merchantWallet
@@ -67,6 +72,16 @@ contract PayBeamUniversal is UniversalContract {
     );
     event RevertEvent(string, RevertContext);
     event AbortEvent(string, AbortContext);
+    event OverpaymentDetected(
+        bytes32 indexed invoiceId,
+        address indexed payer,
+        uint256 amount
+    );
+    event RefundProcessed(
+        bytes32 indexed invoiceId,
+        address indexed recipient,
+        uint256 amount
+    );
     event PingEvent(string indexed greeting, string message);
     event MerchantWalletUpdated(
         bytes32 indexed invoiceId,
@@ -106,11 +121,11 @@ contract PayBeamUniversal is UniversalContract {
         address payoutToken,
         uint256 amount,
         string memory description,
-        address merchantWallet,
-        address merchantId
+        address merchantWallet, // It can be address(0) for easy unboarding
+        string memory merchantId
     ) external onlyRelayer {
         if (invoices[invoiceId].amount != 0) revert InvoiceExists();
-        require(merchantWallet != address(0), "Zero merchant wallet");
+        // require(merchantWallet != address(0), "Zero merchant wallet");
 
         invoices[invoiceId] = Invoice({
             payoutToken: payoutToken,
@@ -119,12 +134,11 @@ contract PayBeamUniversal is UniversalContract {
             merchantId: merchantId,
             paid: false,
             withdrawn: false,
-            totalReceived: 0,
             requiredAmount: amount,
             timestamp: block.timestamp,
             description: description
         });
-
+        // No need to initialize invoiceReceivedPerToken here; will be set on payment
         emit InvoiceCreated(
             invoiceId,
             merchantId,
@@ -171,7 +185,7 @@ contract PayBeamUniversal is UniversalContract {
 
         CallOptions memory callOptions = CallOptions(gasLimit, false);
 
-        RevertOptions memory revertOptions = RevertOptions(
+        RevertOptions memory options = RevertOptions(
             address(this),
             true,
             address(0),
@@ -184,7 +198,7 @@ contract PayBeamUniversal is UniversalContract {
             payoutToken,
             message,
             callOptions,
-            revertOptions
+            options
         );
     }
     
@@ -195,7 +209,7 @@ contract PayBeamUniversal is UniversalContract {
         address payoutToken,
         uint256 amount,
         address merchantWallet,
-        address merchantId,
+        string memory merchantId,
         CallOptions memory callOptions,
         RevertOptions memory revertOptions,
         bytes memory receiver
@@ -285,6 +299,91 @@ contract PayBeamUniversal is UniversalContract {
     }
 
     /// @dev Records payment from a specific chain, marks paid when threshold met.
+    /// @notice Get the total amount paid to an invoice
+    /// @param invoiceId The ID of the invoice to check
+    /// @return totalPaid The total amount paid to the invoice
+    function getTotalPaid(bytes32 invoiceId, address token) external view returns (uint256 totalPaid) {
+        return invoiceReceivedPerToken[invoiceId][token];
+    }
+
+    /// @notice Get the payment details for a specific payer on an invoice
+    /// @param invoiceId The ID of the invoice
+    /// @param payer The address of the payer to check
+    /// @return amountPaid Total amount paid by this payer
+    /// @return chains List of chain IDs where payments were made
+    /// @return amounts List of amounts paid on each chain
+    function getPayerPaymentDetails(
+        bytes32 invoiceId,
+        address payer
+    ) external view returns (
+        uint256 amountPaid,
+        bytes32[] memory chains,
+        uint256[] memory amounts
+    ) {
+        bytes32[] storage chainList = invoiceChains[invoiceId];
+        uint256 chainCount = chainList.length;
+        
+        // Count how many chains have payments
+        uint256 validChains = 0;
+        for (uint256 i = 0; i < chainCount; i++) {
+            if (chainPayments[invoiceId][payer][chainList[i]] > 0) {
+                validChains++;
+            }
+        }
+        
+        // Initialize arrays
+        chains = new bytes32[](validChains);
+        amounts = new uint256[](validChains);
+        
+        // Fill arrays with payment data
+        uint256 index = 0;
+        for (uint256 i = 0; i < chainCount; i++) {
+            bytes32 chainId = chainList[i];
+            uint256 amount = chainPayments[invoiceId][payer][chainId];
+            if (amount > 0) {
+                chains[index] = chainId;
+                amounts[index] = amount;
+                amountPaid += amount;
+                index++;
+            }
+        }
+        
+        return (amountPaid, chains, amounts);
+    }
+
+    /// @dev Process a refund for overpaid amounts
+    /// @param invoiceId The ID of the invoice
+    function claimRefund(bytes32 invoiceId) external {
+        uint256 amount = overpayments[invoiceId][msg.sender];
+        require(amount > 0, "No refund available");
+        
+        // Reset before transfer to prevent reentrancy
+        overpayments[invoiceId][msg.sender] = 0;
+        
+        Invoice storage invoice = invoices[invoiceId];
+        if (invoice.payoutToken == address(0)) {
+            // Native token refund
+            (bool success, ) = msg.sender.call{value: amount}("");
+            require(success, "Transfer failed");
+        } else {
+            // ZRC-20 token refund
+            IZRC20(invoice.payoutToken).transfer(msg.sender, amount);
+        }
+        
+        emit RefundProcessed(invoiceId, msg.sender, amount);
+    }
+
+    /// @dev Get the refundable amount for a specific payer and invoice
+    /// @param invoiceId The ID of the invoice
+    /// @param payer The address of the payer
+    /// @return refundableAmount The amount that can be refunded
+    function getRefundableAmount(
+        bytes32 invoiceId, 
+        address payer
+    ) external view returns (uint256 refundableAmount) {
+        return overpayments[invoiceId][payer];
+    }
+
     function _recordPayment(
         bytes32 invoiceId,
         address payer,
@@ -293,9 +392,53 @@ contract PayBeamUniversal is UniversalContract {
         bytes32 chainId
     ) internal {
         Invoice storage invoice = invoices[invoiceId];
-        require(!invoice.paid, "Already paid");
         require(!invoice.withdrawn, "Already withdrawn");
 
+        // Track per-token received
+        uint256 prevReceived = invoiceReceivedPerToken[invoiceId][token];
+        uint256 required = invoice.requiredAmount;
+        // Only check against requiredAmount if token matches payoutToken
+        bool isPayoutToken = (token == invoice.payoutToken);
+        uint256 remaining = isPayoutToken && prevReceived < required ? required - prevReceived : 0;
+        uint256 appliedAmount = isPayoutToken ? (amount > remaining ? remaining : amount) : 0;
+        
+        // Update per-token received
+        invoiceReceivedPerToken[invoiceId][token] += amount;
+
+        // Handle overpayment for payoutToken
+        if (isPayoutToken) {
+            if (prevReceived < required) {
+                // Only part of this payment may be overpayment
+                if (amount > remaining) {
+                    uint256 overpayment = amount - remaining;
+                    overpayments[invoiceId][payer] += overpayment;
+                    emit OverpaymentDetected(invoiceId, payer, overpayment);
+                }
+                // Mark as paid if fully covered
+                if (invoiceReceivedPerToken[invoiceId][token] >= required) {
+                    invoice.paid = true;
+                    emit InvoiceFullyPaid(invoiceId);
+                }
+            } else {
+                // Already fully paid, treat all as overpayment
+                overpayments[invoiceId][payer] += amount;
+                emit OverpaymentDetected(invoiceId, payer, amount);
+            }
+        }
+        // Record the payment against the invoice
+        _recordChainPayment(invoiceId, payer, amount, chainId, token);
+    }
+    
+    /// @dev Internal function to record chain-specific payment details
+    function _recordChainPayment(
+        bytes32 invoiceId,
+        address payer,
+        uint256 amount,
+        bytes32 chainId,
+        address token
+    ) internal {
+        Invoice storage invoice = invoices[invoiceId];
+        
         // Record chain-specific payment
         chainPayments[invoiceId][payer][chainId] += amount;
         chainTotals[invoiceId][chainId] += amount;
@@ -303,26 +446,28 @@ contract PayBeamUniversal is UniversalContract {
         // Add chain to invoice's chain list if not already present
         bytes32[] storage chains = invoiceChains[invoiceId];
         bool chainExists = false;
-        for (uint i = 0; i < chains.length; i++) {
+        
+        // 
+        for (uint256 i = 0; i < chains.length; i++) {
             if (chains[i] == chainId) {
                 chainExists = true;
                 break;
             }
         }
+        
         if (!chainExists) {
             chains.push(chainId);
         }
 
         // Update general escrow and invoice tracking
         escrow[invoiceId] += amount;
-        invoice.totalReceived += amount;
-
+        
+        // Add payer to the list if this is their first payment
         if (payments[invoiceId][payer] == 0) {
             payers[invoiceId].push(payer);
         }
         payments[invoiceId][payer] += amount;
-        // tokens[invoiceId][token] += amount;
-
+        
         emit PaymentReceived(
             invoiceId,
             payer,
@@ -330,40 +475,37 @@ contract PayBeamUniversal is UniversalContract {
             amount,
             escrow[invoiceId]
         );
-
-        if (invoice.totalReceived >= invoice.amount) {
-            invoice.paid = true;
-            emit InvoiceFullyPaid(invoiceId);
-        }
+        
+        // No need to check paid status here; handled in _recordPayment
     }
 
     /// @notice Backend-only: withdraw full escrow to merchant wallet
     function withdrawInvoice(bytes32 invoiceId) external onlyRelayer {
         Invoice storage invoice = invoices[invoiceId];
-        Invoice storage inv = invoices[invoiceId];
-        uint256 total = escrow[invoiceId];
+        uint256 total = invoiceReceivedPerToken[invoiceId][invoice.payoutToken];
 
-        if (inv.amount == 0) revert NotFound();
-        if (!inv.paid) revert NotFullyPaid();
-        if (inv.withdrawn) revert AlreadyWithdrawn();
-        if (total < inv.amount) revert NotFullyPaid();
+        if (invoice.amount == 0) revert NotFound();
+        if (!invoice.paid) revert NotFullyPaid();
+        if (invoice.withdrawn) revert AlreadyWithdrawn();
+        if (total < invoice.amount) revert NotFullyPaid();
 
-        inv.withdrawn = true;
+        invoice.withdrawn = true;
 
         // send native ZETA
-        if (inv.payoutToken == address(0)) {
-            (bool ok, ) = inv.merchantWallet.call{value: total}("");
+        if (invoice.payoutToken == address(0)) {
+            (bool ok, ) = invoice.merchantWallet.call{value: total}("");
             if (!ok) revert TransferFailed();
         } else {
             // send ZRC-20 token
-            if (!IZRC20(inv.payoutToken).transfer(inv.merchantWallet, total)) {
+            if (!IZRC20(invoice.payoutToken).transfer(invoice.merchantWallet, total)) {
                 revert TransferFailed();
             }
         }
 
-        emit InvoiceWithdrawn(invoiceId, inv.merchantWallet, total);
+        emit InvoiceWithdrawn(invoiceId, invoice.merchantWallet, total);
 
-        delete escrow[invoiceId];
+        // Only clear the payoutToken's received amount
+        invoiceReceivedPerToken[invoiceId][invoice.payoutToken] = 0;
     }
 
     // --- Unused ZetaChain callbacks (stubs) ---
@@ -379,3 +521,5 @@ contract PayBeamUniversal is UniversalContract {
 
     fallback() external payable {}
 }
+
+
